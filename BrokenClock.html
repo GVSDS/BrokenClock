@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Broken Time — Roman Clock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Special+Elite&display=swap" rel="stylesheet">
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #003399; }
+    body {
+        font-family: 'Cinzel', serif;
+        color: #fff;
+        cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cg transform='rotate(-45 12 12)'%3E%3Crect x='2' y='6' width='20' height='12' fill='%23a8a8a8' stroke='%23222' stroke-width='1' rx='1'/%3E%3Crect x='3' y='7' width='18' height='3' fill='%23e8e8e8'/%3E%3Crect x='9' y='16' width='8' height='3' fill='%23333'/%3E%3Crect x='10' y='18' width='6' height='24' fill='%238B5A2B' stroke='%233D2611' stroke-width='0.5'/%3E%3Cline x1='10' y1='24' x2='16' y2='24' stroke='%233D2611' stroke-width='0.5'/%3E%3Cline x1='10' y1='30' x2='16' y2='30' stroke='%233D2611' stroke-width='0.5'/%3E%3Cline x1='10' y1='36' x2='16' y2='36' stroke='%233D2611' stroke-width='0.5'/%3E%3Crect x='9' y='40' width='8' height='3' fill='%233D2611' rx='1'/%3E%3C/g%3E%3C/svg%3E") 8 8, auto;
+    }
+    canvas { display: block; position: absolute; top: 0; left: 0; }
+    .corner {
+        position: fixed; color: rgba(255,255,255,0.22);
+        font-family: 'Special Elite', 'Courier New', monospace;
+        font-size: 11px; letter-spacing: 2px;
+        pointer-events: none; user-select: none; line-height: 1.7; z-index: 5;
+    }
+    .corner.tl { top: 28px; left: 32px; }
+    .corner.tr { top: 28px; right: 32px; text-align: right; }
+    .corner.bl { bottom: 28px; left: 32px; }
+    .corner.br { bottom: 28px; right: 32px; text-align: right; }
+    .hint {
+        position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+        color: rgba(255,255,255,0.4); font-size: 11px; letter-spacing: 6px;
+        text-transform: uppercase; font-family: 'Courier New', monospace;
+        pointer-events: none; user-select: none; z-index: 10;
+        transition: opacity 0.6s; animation: pulse 3s ease-in-out infinite;
+    }
+    .hint.hidden { opacity: 0; animation: none; }
+    @keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 0.78; } }
+    .reform {
+        position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+        background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.3);
+        color: rgba(255,255,255,0.8); padding: 11px 28px;
+        font-family: 'Courier New', monospace; font-size: 11px; letter-spacing: 5px;
+        cursor: inherit; opacity: 0; pointer-events: none;
+        transition: opacity 0.6s, background 0.2s, border-color 0.2s, color 0.2s;
+        text-transform: uppercase; z-index: 10;
+    }
+    .reform.show { opacity: 1; pointer-events: auto; }
+    .reform:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.65); color: #fff; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="corner tl">BSOD // 0x0000007B<br>SESSION: FRAGMENTED</div>
+<div class="corner tr">A problem has been detected<br>and the clock has stopped</div>
+<div class="corner bl">ROMAN.PROTOCOL // XII<br>MEMENTO · TEMPUS · CARPE</div>
+<div class="corner br">fragment.time<br>v.0.7.3 — struck</div>
+<div class="hint" id="hint">Strike the dial to shatter</div>
+<button class="reform" id="reform">Reform Time</button>
+
+<script>
+'use strict';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hint = document.getElementById('hint');
+const reformBtn = document.getElementById('reform');
+
+const clockCanvas = document.createElement('canvas');
+const clockCtx = clockCanvas.getContext('2d');
+const textCanvas = document.createElement('canvas');
+const textCtx = textCanvas.getContext('2d');
+
+let W, H, cx, cy, radius, MIN_AREA;
+let state = 'intact';
+let shards = [];
+let struck = false;
+let strikeTime = 0;
+let strikeX = 0, strikeY = 0;
+let textDirty = true;
+let isStriking = false;
+
+function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    cx = W / 2;
+    cy = H / 2;
+    radius = Math.max(160, Math.min(W, H) * 0.34);
+    MIN_AREA = radius * radius * 0.006;
+
+    clockCanvas.width = W; clockCanvas.height = H;
+    textCanvas.width = W; textCanvas.height = H;
+    textDirty = true;
+
+    if (state === 'shattered') reset();
+}
+resize();
+window.addEventListener('resize', resize);
+
+canvas.addEventListener('mousedown', e => {
+    if (isStriking) return;
+    const x = e.clientX, y = e.clientY;
+
+    if (state === 'intact') {
+        const dx = x - cx, dy = y - cy;
+        if (dx*dx + dy*dy <= radius * radius * 1.05) {
+            isStriking = true;
+            triggerStrike(x, y, () => {
+                shatterInitial(strikeX, strikeY);
+                isStriking = false;
+                setTimeout(() => reformBtn.classList.add('show'), 800);
+            });
+        }
+    } else if (state === 'shattered') {
+        const shard = findShardAt(x, y);
+        if (shard && shard.area > MIN_AREA) {
+            isStriking = true;
+            triggerStrike(x, y, () => {
+                if (shards.indexOf(shard) < 0) { isStriking = false; return; }
+                shatterShard(shard, strikeX, strikeY);
+                isStriking = false;
+            });
+        }
+    }
+});
+
+function triggerStrike(x, y, callback) {
+    strikeX = x;
+    strikeY = y;
+    struck = true;
+    strikeTime = performance.now();
+    hint.classList.add('hidden');
+    setTimeout(callback, 130);
+}
+
+reformBtn.addEventListener('click', reset);
+
+function reset() {
+    state = 'intact';
+    shards = [];
+    struck = false;
+    isStriking = false;
+    hint.classList.remove('hidden');
+    reformBtn.classList.remove('show');
+}
+
+const ROMANS = ['XII', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI'];
+
+function drawClockTo(c) {
+    c.save();
+    c.fillStyle = 'rgba(255, 255, 255, 0.95)';
+    c.font = `${Math.floor(radius * 0.14)}px "Cinzel", serif`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    for (let i = 0; i < 12; i++) {
+        const angle = i * Math.PI / 6 - Math.PI / 2;
+        c.fillText(ROMANS[i], cx + Math.cos(angle) * radius * 0.78, cy + Math.sin(angle) * radius * 0.78);
+    }
+
+    c.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    for (let i = 0; i < 60; i++) {
+        const angle = i * Math.PI / 30 - Math.PI / 2;
+        const r1 = i % 5 === 0 ? radius * 0.88 : radius * 0.92;
+        c.lineWidth = i % 5 === 0 ? 1.4 : 0.6;
+        c.beginPath();
+        c.moveTo(cx + Math.cos(angle) * r1, cy + Math.sin(angle) * r1);
+        c.lineTo(cx + Math.cos(angle) * radius * 0.96, cy + Math.sin(angle) * radius * 0.96);
+        c.stroke();
+    }
+
+    const now = new Date();
+    const h = now.getHours() % 12;
+    const m = now.getMinutes();
+    const s = now.getSeconds();
+    const ms = now.getMilliseconds();
+    const hourAngle = (h + m/60 + s/3600) * Math.PI / 6 - Math.PI/2;
+    const minAngle = (m + s/60 + ms/60000) * Math.PI / 30 - Math.PI/2;
+    const secAngle = (s + ms/1000) * Math.PI / 30 - Math.PI/2;
+
+    c.lineCap = 'round';
+    // 指针泛光：用两层描边模拟，不用shadowBlur
+    c.strokeStyle = 'rgba(180, 220, 255, 0.35)';
+    c.lineWidth = 6;
+    c.beginPath();
+    c.moveTo(cx - Math.cos(hourAngle) * radius * 0.08, cy - Math.sin(hourAngle) * radius * 0.08);
+    c.lineTo(cx + Math.cos(hourAngle) * radius * 0.45, cy + Math.sin(hourAngle) * radius * 0.45);
+    c.stroke();
+
+    c.strokeStyle = '#ffffff';
+    c.lineWidth = 2.8;
+    c.beginPath();
+    c.moveTo(cx - Math.cos(hourAngle) * radius * 0.08, cy - Math.sin(hourAngle) * radius * 0.08);
+    c.lineTo(cx + Math.cos(hourAngle) * radius * 0.45, cy + Math.sin(hourAngle) * radius * 0.45);
+    c.stroke();
+
+    c.strokeStyle = 'rgba(200, 230, 255, 0.35)';
+    c.lineWidth = 4.5;
+    c.beginPath();
+    c.moveTo(cx - Math.cos(minAngle) * radius * 0.08, cy - Math.sin(minAngle) * radius * 0.08);
+    c.lineTo(cx + Math.cos(minAngle) * radius * 0.65, cy + Math.sin(minAngle) * radius * 0.65);
+    c.stroke();
+
+    c.strokeStyle = '#ffffff';
+    c.lineWidth = 1.8;
+    c.beginPath();
+    c.moveTo(cx - Math.cos(minAngle) * radius * 0.08, cy - Math.sin(minAngle) * radius * 0.08);
+    c.lineTo(cx + Math.cos(minAngle) * radius * 0.65, cy + Math.sin(minAngle) * radius * 0.65);
+    c.stroke();
+
+    c.strokeStyle = 'rgba(255, 200, 100, 0.4)';
+    c.lineWidth = 3.5;
+    c.beginPath();
+    c.moveTo(cx - Math.cos(secAngle) * radius * 0.12, cy - Math.sin(secAngle) * radius * 0.12);
+    c.lineTo(cx + Math.cos(secAngle) * radius * 0.78, cy + Math.sin(secAngle) * radius * 0.78);
+    c.stroke();
+
+    c.strokeStyle = '#fff5cc';
+    c.lineWidth = 1;
+    c.beginPath();
+    c.moveTo(cx - Math.cos(secAngle) * radius * 0.12, cy - Math.sin(secAngle) * radius * 0.12);
+    c.lineTo(cx + Math.cos(secAngle) * radius * 0.78, cy + Math.sin(secAngle) * radius * 0.78);
+    c.stroke();
+
+    c.fillStyle = '#ffffff';
+    c.beginPath(); c.arc(cx, cy, 4, 0, Math.PI * 2); c.fill();
+    c.fillStyle = '#003399';
+    c.beginPath(); c.arc(cx, cy, 1.5, 0, Math.PI * 2); c.fill();
+    c.restore();
+}
+
+const TEXT_LINES = [
+    'Time is the fire in which we burn.',
+    'The dial shatters; the hours scatter like stars.',
+    'Each tick a heartbeat, each tock a wound.',
+    'What remains when the numbers fall?',
+    'Only silence between the broken seconds.',
+    'Memory is a cracked mirror reflecting nothing.',
+    'We are fragments of a forgotten whole.',
+    'The hammer falls — the clock dies — we with it.',
+    'I II III IV V VI VII VIII IX X XI XII',
+    'Tempus fugit. Time flees; we follow.',
+    'Memento mori. Remember you must die.',
+    'Carpe noctem. Seize the fractured night.',
+    'The center cannot hold; things fall apart.',
+    'A second is a lie the clock once told.',
+    'Hours bleed through cracks of shattered glass.',
+    'VII hours to sleep, III to dream, XII to forget.',
+    'The past is broken glass; each shard, a memory.',
+    'Tempus edax rerum — time, devourer of all.',
+    'What is time but the shadow of desire?',
+    'The hour hand trembles; the minute hand falls.',
+    'Clockwork broken, gears without time, we wait.',
+    'In the silence between ticks, eternity hides.',
+    'Fractured moment, memory fragment, broken now.',
+    'We measure our lives in broken dials and lost hours.',
+    'The clock face cracks; the numerals bleed away.',
+    'Each second a shard, each minute a wound unhealed.',
+    'Time is a circle broken by the hand that strikes.',
+    'Beneath the hammer of consequence, we break.',
+    'Of a larger breaking, we are but echoes.',
+    'The hours bleed away through the cracks of time.',
+    'XII hours to dawn, XII to dusk, XII to nothing.',
+    'The clock dies, and in its dying, speaks.',
+    'What the hammer strikes, time cannot mend.',
+    'Each numeral a wound; each wound, a number.',
+    'In shards we read the silence of the hours.',
+    'Strike the dial — shatter the lie — free the hour.',
+    'Memento — tempus — carpe — fragmentum.',
+    'A fractured moment, a memory, a broken now.',
+    'The dial breaks; the time bleeds; we remain.',
+    'IX lives, VII sleepers, III in the trinity of dusk.',
+    'When the XII fall, only I remains — and I am nothing.',
+    'Tempus omnia revelat. Time reveals all things.',
+    'And in the end, the clock was always already broken.',
+];
+
+function drawTextShardTo(c) {
+    c.save();
+    const fontSize = Math.max(9, Math.floor(radius * 0.052));
+    c.fillStyle = 'rgba(255, 255, 255, 0.78)';
+    c.font = `italic 400 ${fontSize}px "EB Garamond", "Cormorant Garamond", serif`;
+    c.textAlign = 'left';
+    c.textBaseline = 'middle';
+
+    const lineH = fontSize * 1.5;
+    let textIdx = 0;
+    let y = cy - radius + lineH * 0.5;
+
+    while (y < cy + radius) {
+        const dy = y - cy;
+        const absDy = Math.abs(dy);
+        if (absDy < radius) {
+            const halfWidth = Math.sqrt(Math.max(0, radius * radius - dy * dy));
+            const xStart = cx - halfWidth + 8;
+            const xEnd = cx + halfWidth - 8;
+            let x = xStart;
+            while (x < xEnd) {
+                const text = TEXT_LINES[textIdx % TEXT_LINES.length];
+                c.fillText(text, x, y);
+                textIdx++;
+                const textWidth = c.measureText(text).width;
+                x += textWidth + fontSize * 0.9;
+            }
+        }
+        y += lineH;
+    }
+    c.restore();
+}
+
+function shatterInitial(clickX, clickY) {
+    state = 'shattered';
+    const cp = { x: clickX, y: clickY };
+    const numShards = 5;
+
+    const intervals = [];
+    let total = 0;
+    for (let i = 0; i < numShards; i++) {
+        const v = 0.6 + Math.random() * 1.4;
+        intervals.push(v);
+        total += v;
+    }
+    const angles = [];
+    const startAngle = Math.random() * Math.PI * 2;
+    angles.push(startAngle);
+    let cum = 0;
+    for (let i = 0; i < numShards - 1; i++) {
+        cum += intervals[i] / total * Math.PI * 2;
+        angles.push((startAngle + cum) % (Math.PI * 2));
+    }
+    angles.sort((a, b) => a - b);
+
+    const edges = [];
+    for (let i = 0; i < numShards; i++) {
+        const a = angles[i];
+        const bx = cx + radius * Math.cos(a);
+        const by = cy + radius * Math.sin(a);
+        edges.push(zigzagPath(cp.x, cp.y, bx, by));
+    }
+
+    const arcs = [];
+    for (let i = 0; i < numShards; i++) {
+        const a1 = angles[i];
+        const a2 = angles[(i + 1) % numShards];
+        const arc = [];
+        const steps = 30;
+        let aDiff = a2 - a1;
+        if (aDiff < 0) aDiff += Math.PI * 2;
+        for (let j = 0; j <= steps; j++) {
+            const a = a1 + aDiff * j / steps;
+            arc.push([cx + radius * Math.cos(a), cy + radius * Math.sin(a)]);
+        }
+        arcs.push(arc);
+    }
+
+    for (let i = 0; i < numShards; i++) {
+        const nextI = (i + 1) % numShards;
+
+        const points = [];
+        for (let k = 0; k < edges[i].length; k++) {
+            points.push(edges[i][k]);
+        }
+        for (let k = 1; k < arcs[i].length; k++) {
+            points.push(arcs[i][k]);
+        }
+        for (let k = edges[nextI].length - 2; k >= 0; k--) {
+            points.push(edges[nextI][k]);
+        }
+
+        const centroid = computeCentroid(points);
+        const area = computeArea(points);
+
+        const fdx = centroid[0] - cp.x;
+        const fdy = centroid[1] - cp.y;
+        const fdist = Math.max(0.1, Math.sqrt(fdx * fdx + fdy * fdy));
+
+        shards.push({
+            points, centroid, area,
+            vx: (fdx / fdist) * (0.8 + Math.random() * 0.9),
+            vy: (fdy / fdist) * (0.8 + Math.random() * 0.9),
+            rotation: 0,
+            rotationSpeed: (Math.random() - 0.5) * 0.012,
+            offsetX: 0, offsetY: 0,
+            type: 'clock',
+            effRadius: Math.sqrt(area / Math.PI),
+            birthTime: performance.now(),
+        });
+    }
+
+    shards.sort((a, b) => b.area - a.area);
+    shards[1].type = 'text';
+
+    shards.forEach((s, i) => {
+        const speedFactor = 0.4 + i * 0.1;
+        s.vx *= speedFactor;
+        s.vy *= speedFactor;
+    });
+}
+
+function shatterShard(shard, clickX, clickY) {
+    const [lcx, lcy] = pointToLocal(shard, clickX, clickY);
+
+    const numRays = 3 + Math.floor(Math.random() * 2);
+    const baseAngle = Math.random() * Math.PI * 2;
+    const intersections = [];
+
+    for (let i = 0; i < numRays; i++) {
+        const angle = baseAngle + (i / numRays) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+        const dx = Math.cos(angle);
+        const dy = Math.sin(angle);
+        const inter = rayPolygonIntersect(lcx, lcy, dx, dy, shard.points);
+        if (inter) intersections.push({ ...inter, angle });
+    }
+
+    if (intersections.length < 2) return;
+    intersections.sort((a, b) => a.angle - b.angle);
+
+    const numNew = intersections.length;
+    const edges = [];
+    for (let i = 0; i < numNew; i++) {
+        edges.push(zigzagPath(lcx, lcy, intersections[i].point[0], intersections[i].point[1]));
+    }
+
+    const n = shard.points.length;
+    const newShards = [];
+
+    for (let i = 0; i < numNew; i++) {
+        const nextI = (i + 1) % numNew;
+        const start = intersections[i];
+        const end = intersections[nextI];
+
+        const points = [];
+        for (let k = 0; k < edges[i].length; k++) {
+            points.push(edges[i][k]);
+        }
+        if (start.edgeIndex !== end.edgeIndex) {
+            let ei = (start.edgeIndex + 1) % n;
+            while (ei !== end.edgeIndex) {
+                points.push(shard.points[ei]);
+                ei = (ei + 1) % n;
+            }
+            points.push(shard.points[ei]);
+        }
+        for (let k = edges[nextI].length - 1; k >= 1; k--) {
+            points.push(edges[nextI][k]);
+        }
+
+        const centroid = computeCentroid(points);
+        const area = computeArea(points);
+        if (area < 50) continue;
+
+        const [scx, scy] = pointToScreen(shard, centroid[0], centroid[1]);
+        const fdx = scx - clickX;
+        const fdy = scy - clickY;
+        const fdist = Math.max(0.1, Math.sqrt(fdx * fdx + fdy * fdy));
+
+        const baseSpeed = 0.5 + Math.random() * 0.5;
+        newShards.push({
+            points,
+            centroid,
+            area,
+            offsetX: shard.offsetX,
+            offsetY: shard.offsetY,
+            rotation: shard.rotation,
+            vx: (fdx / fdist) * baseSpeed + shard.vx * 0.4,
+            vy: (fdy / fdist) * baseSpeed + shard.vy * 0.4,
+            rotationSpeed: (Math.random() - 0.5) * 0.012 + shard.rotationSpeed * 0.3,
+            type: shard.type,
+            effRadius: Math.sqrt(area / Math.PI),
+            birthTime: performance.now(),
+        });
+    }
+
+    if (newShards.length < 2) return;
+
+    const idx = shards.indexOf(shard);
+    if (idx >= 0) {
+        shards.splice(idx, 1, ...newShards);
+    }
+}
+
+function resolveCollisions() {
+    for (let i = 0; i < shards.length; i++) {
+        for (let j = i + 1; j < shards.length; j++) {
+            const a = shards[i];
+            const b = shards[j];
+
+            const ax = a.centroid[0] + a.offsetX;
+            const ay = a.centroid[1] + a.offsetY;
+            const bx = b.centroid[0] + b.offsetX;
+            const by = b.centroid[1] + b.offsetY;
+
+            const dx = bx - ax;
+            const dy = by - ay;
+            const distSq = dx * dx + dy * dy;
+            const minDist = (a.effRadius + b.effRadius) * 0.82;
+
+            if (distSq < minDist * minDist && distSq > 0.01) {
+                const dist = Math.sqrt(distSq);
+                const overlap = minDist - dist;
+                const nx = dx / dist;
+                const ny = dy / dist;
+
+                const totalArea = a.area + b.area;
+                const pushA = overlap * (b.area / totalArea);
+                const pushB = overlap * (a.area / totalArea);
+
+                a.offsetX -= nx * pushA;
+                a.offsetY -= ny * pushA;
+                b.offsetX += nx * pushB;
+                b.offsetY += ny * pushB;
+
+                const sep = 0.08;
+                a.vx -= nx * sep;
+                a.vy -= ny * sep;
+                b.vx += nx * sep;
+                b.vy += ny * sep;
+            }
+        }
+    }
+}
+
+function pointToScreen(shard, lx, ly) {
+    const dx = lx - shard.centroid[0];
+    const dy = ly - shard.centroid[1];
+    const cos = Math.cos(shard.rotation);
+    const sin = Math.sin(shard.rotation);
+    return [
+        dx * cos - dy * sin + shard.centroid[0] + shard.offsetX,
+        dx * sin + dy * cos + shard.centroid[1] + shard.offsetY
+    ];
+}
+
+function pointToLocal(shard, sx, sy) {
+    const dx = sx - shard.centroid[0] - shard.offsetX;
+    const dy = sy - shard.centroid[1] - shard.offsetY;
+    const cos = Math.cos(shard.rotation);
+    const sin = Math.sin(shard.rotation);
+    return [
+        dx * cos + dy * sin + shard.centroid[0],
+        -dx * sin + dy * cos + shard.centroid[1]
+    ];
+}
+
+function pointInPolygon(x, y, points) {
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const xi = points[i][0], yi = points[i][1];
+        const xj = points[j][0], yj = points[j][1];
+        if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+function findShardAt(x, y) {
+    for (let i = shards.length - 1; i >= 0; i--) {
+        const s = shards[i];
+        const [lx, ly] = pointToLocal(s, x, y);
+        if (pointInPolygon(lx, ly, s.points)) return s;
+    }
+    return null;
+}
+
+function rayPolygonIntersect(ox, oy, dx, dy, points) {
+    let closestT = Infinity;
+    let closestEdge = -1;
+    let closestPoint = null;
+
+    for (let i = 0; i < points.length; i++) {
+        const j = (i + 1) % points.length;
+        const ax = points[i][0], ay = points[i][1];
+        const bx = points[j][0], by = points[j][1];
+        const ex = bx - ax, ey = by - ay;
+
+        const det = dy * ex - dx * ey;
+        if (Math.abs(det) < 1e-10) continue;
+
+        const t = (ex * (ay - oy) - ey * (ax - ox)) / det;
+        const u = (dx * (ay - oy) - dy * (ax - ox)) / det;
+
+        if (t > 1e-6 && u >= 0 && u <= 1 && t < closestT) {
+            closestT = t;
+            closestEdge = i;
+            closestPoint = [ox + t * dx, oy + t * dy];
+        }
+    }
+
+    return closestEdge >= 0 ? { point: closestPoint, edgeIndex: closestEdge } : null;
+}
+
+function zigzagPath(x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 1) return [[x1, y1], [x2, y2]];
+    const nx = -dy / dist, ny = dx / dist;
+    const points = [[x1, y1]];
+    const segments = 2 + Math.floor(Math.random() * 2);
+    for (let i = 1; i < segments; i++) {
+        const t = i / segments;
+        const offset = (Math.random() - 0.5) * dist * 0.18;
+        points.push([x1 + dx * t + nx * offset, y1 + dy * t + ny * offset]);
+    }
+    points.push([x2, y2]);
+    return points;
+}
+
+function computeArea(points) {
+    let area = 0;
+    for (let i = 0; i < points.length; i++) {
+        const j = (i + 1) % points.length;
+        area += points[i][0] * points[j][1];
+        area -= points[j][0] * points[i][1];
+    }
+    return Math.abs(area / 2);
+}
+
+function computeCentroid(points) {
+    let cx_ = 0, cy_ = 0;
+    for (const p of points) { cx_ += p[0]; cy_ += p[1]; }
+    return [cx_ / points.length, cy_ / points.length];
+}
+
+function drawShard(shard) {
+    const age = (performance.now() - shard.birthTime) / 1000;
+    let glow = 0;
+    if (age < 1.5) {
+        glow = Math.max(0, 1 - age / 1.5);
+        glow = Math.pow(glow, 1.2);
+    }
+
+    ctx.save();
+    ctx.translate(shard.centroid[0] + shard.offsetX, shard.centroid[1] + shard.offsetY);
+    ctx.rotate(shard.rotation);
+    ctx.translate(-shard.centroid[0], -shard.centroid[1]);
+
+    ctx.beginPath();
+    ctx.moveTo(shard.points[0][0], shard.points[0][1]);
+    for (let i = 1; i < shard.points.length; i++) {
+        ctx.lineTo(shard.points[i][0], shard.points[i][1]);
+    }
+    ctx.closePath();
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+    ctx.fill();
+
+    // 破裂边缘发光：三层不同粗细透明度的描边叠加，无shadowBlur
+    if (glow > 0.05) {
+        // 外层泛光：粗线低透明度，模拟大范围弥散
+        ctx.strokeStyle = `rgba(150, 210, 255, ${glow * 0.25})`;
+        ctx.lineWidth = 10;
+        ctx.stroke();
+        // 中层光晕：中等粗细
+        ctx.strokeStyle = `rgba(200, 230, 255, ${glow * 0.5})`;
+        ctx.lineWidth = 4.5;
+        ctx.stroke();
+        // 内层高亮核心：细线高透明度
+        ctx.strokeStyle = `rgba(255, 255, 255, ${glow})`;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+    }
+
+    ctx.save();
+    ctx.clip();
+    const srcCanvas = shard.type === 'text' ? textCanvas : clockCanvas;
+    ctx.drawImage(srcCanvas, 0, 0);
+    ctx.restore();
+
+    ctx.restore();
+}
+
+function drawStrikeEffect() {
+    if (!struck) return;
+    const elapsed = performance.now() - strikeTime;
+    if (elapsed > 130) return;
+    const t = elapsed / 130;
+
+    ctx.save();
+    ctx.globalAlpha = (1 - t) * 0.9;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3 * (1 - t);
+    ctx.beginPath();
+    ctx.arc(strikeX, strikeY, t * 95, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(strikeX, strikeY, t * 50, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function animate() {
+    clockCtx.clearRect(0, 0, W, H);
+    drawClockTo(clockCtx);
+
+    if (textDirty) {
+        textCtx.clearRect(0, 0, W, H);
+        drawTextShardTo(textCtx);
+        textDirty = false;
+    }
+
+    ctx.clearRect(0, 0, W, H);
+
+    if (state === 'intact') {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.drawImage(clockCanvas, 0, 0);
+    } else {
+        for (const s of shards) {
+            s.offsetX += s.vx;
+            s.offsetY += s.vy;
+            s.rotation += s.rotationSpeed;
+            s.vx *= 0.95;
+            s.vy *= 0.95;
+            s.rotationSpeed *= 0.97;
+        }
+        resolveCollisions();
+        for (const s of shards) {
+            drawShard(s);
+        }
+    }
+
+    drawStrikeEffect();
+    requestAnimationFrame(animate);
+}
+
+animate();
+</script>
+</body>
+</html>
