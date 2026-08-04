@@ -78,6 +78,7 @@ let strikeTime = 0;
 let strikeX = 0, strikeY = 0;
 let textDirty = true;
 let isStriking = false;
+let reformState = null;
 
 function resize() {
     W = canvas.width = window.innerWidth;
@@ -91,13 +92,14 @@ function resize() {
     textCanvas.width = W; textCanvas.height = H;
     textDirty = true;
 
-    if (state === 'shattered') reset();
+    if (state !== 'intact') reset();
 }
 resize();
 window.addEventListener('resize', resize);
 
 canvas.addEventListener('mousedown', e => {
     if (isStriking) return;
+    if (state !== 'intact' && state !== 'shattered') return;
     const x = e.clientX, y = e.clientY;
 
     if (state === 'intact') {
@@ -132,15 +134,39 @@ function triggerStrike(x, y, callback) {
     setTimeout(callback, 130);
 }
 
-reformBtn.addEventListener('click', reset);
+reformBtn.addEventListener('click', () => {
+    if (state === 'shattered') startReform();
+});
 
 function reset() {
     state = 'intact';
     shards = [];
     struck = false;
     isStriking = false;
+    reformState = null;
     hint.classList.remove('hidden');
     reformBtn.classList.remove('show');
+}
+
+function startReform() {
+    state = 'reforming';
+    reformBtn.classList.remove('show');
+
+    reformState = {
+        startTime: performance.now(),
+        moveDuration: 1000,  // 阶段1:位移归位
+        fadeDuration: 600,   // 阶段2:内容渐隐
+        initialStates: shards.map(s => ({
+            shard: s,
+            startOffsetX: s.offsetX,
+            startOffsetY: s.offsetY,
+            startRotation: s.rotation,
+        })),
+    };
+}
+
+function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
 const ROMANS = ['XII', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI'];
@@ -177,14 +203,13 @@ function drawClockTo(c) {
     const secAngle = (s + ms/1000) * Math.PI / 30 - Math.PI/2;
 
     c.lineCap = 'round';
-    // 指针泛光：用两层描边模拟，不用shadowBlur
+
     c.strokeStyle = 'rgba(180, 220, 255, 0.35)';
     c.lineWidth = 6;
     c.beginPath();
     c.moveTo(cx - Math.cos(hourAngle) * radius * 0.08, cy - Math.sin(hourAngle) * radius * 0.08);
     c.lineTo(cx + Math.cos(hourAngle) * radius * 0.45, cy + Math.sin(hourAngle) * radius * 0.45);
     c.stroke();
-
     c.strokeStyle = '#ffffff';
     c.lineWidth = 2.8;
     c.beginPath();
@@ -198,7 +223,6 @@ function drawClockTo(c) {
     c.moveTo(cx - Math.cos(minAngle) * radius * 0.08, cy - Math.sin(minAngle) * radius * 0.08);
     c.lineTo(cx + Math.cos(minAngle) * radius * 0.65, cy + Math.sin(minAngle) * radius * 0.65);
     c.stroke();
-
     c.strokeStyle = '#ffffff';
     c.lineWidth = 1.8;
     c.beginPath();
@@ -212,7 +236,6 @@ function drawClockTo(c) {
     c.moveTo(cx - Math.cos(secAngle) * radius * 0.12, cy - Math.sin(secAngle) * radius * 0.12);
     c.lineTo(cx + Math.cos(secAngle) * radius * 0.78, cy + Math.sin(secAngle) * radius * 0.78);
     c.stroke();
-
     c.strokeStyle = '#fff5cc';
     c.lineWidth = 1;
     c.beginPath();
@@ -353,21 +376,13 @@ function shatterInitial(clickX, clickY) {
 
     for (let i = 0; i < numShards; i++) {
         const nextI = (i + 1) % numShards;
-
         const points = [];
-        for (let k = 0; k < edges[i].length; k++) {
-            points.push(edges[i][k]);
-        }
-        for (let k = 1; k < arcs[i].length; k++) {
-            points.push(arcs[i][k]);
-        }
-        for (let k = edges[nextI].length - 2; k >= 0; k--) {
-            points.push(edges[nextI][k]);
-        }
+        for (let k = 0; k < edges[i].length; k++) points.push(edges[i][k]);
+        for (let k = 1; k < arcs[i].length; k++) points.push(arcs[i][k]);
+        for (let k = edges[nextI].length - 2; k >= 0; k--) points.push(edges[nextI][k]);
 
         const centroid = computeCentroid(points);
         const area = computeArea(points);
-
         const fdx = centroid[0] - cp.x;
         const fdy = centroid[1] - cp.y;
         const fdist = Math.max(0.1, Math.sqrt(fdx * fdx + fdy * fdy));
@@ -397,7 +412,6 @@ function shatterInitial(clickX, clickY) {
 
 function shatterShard(shard, clickX, clickY) {
     const [lcx, lcy] = pointToLocal(shard, clickX, clickY);
-
     const numRays = 3 + Math.floor(Math.random() * 2);
     const baseAngle = Math.random() * Math.PI * 2;
     const intersections = [];
@@ -426,11 +440,8 @@ function shatterShard(shard, clickX, clickY) {
         const nextI = (i + 1) % numNew;
         const start = intersections[i];
         const end = intersections[nextI];
-
         const points = [];
-        for (let k = 0; k < edges[i].length; k++) {
-            points.push(edges[i][k]);
-        }
+        for (let k = 0; k < edges[i].length; k++) points.push(edges[i][k]);
         if (start.edgeIndex !== end.edgeIndex) {
             let ei = (start.edgeIndex + 1) % n;
             while (ei !== end.edgeIndex) {
@@ -439,9 +450,7 @@ function shatterShard(shard, clickX, clickY) {
             }
             points.push(shard.points[ei]);
         }
-        for (let k = edges[nextI].length - 1; k >= 1; k--) {
-            points.push(edges[nextI][k]);
-        }
+        for (let k = edges[nextI].length - 1; k >= 1; k--) points.push(edges[nextI][k]);
 
         const centroid = computeCentroid(points);
         const area = computeArea(points);
@@ -454,11 +463,8 @@ function shatterShard(shard, clickX, clickY) {
 
         const baseSpeed = 0.5 + Math.random() * 0.5;
         newShards.push({
-            points,
-            centroid,
-            area,
-            offsetX: shard.offsetX,
-            offsetY: shard.offsetY,
+            points, centroid, area,
+            offsetX: shard.offsetX, offsetY: shard.offsetY,
             rotation: shard.rotation,
             vx: (fdx / fdist) * baseSpeed + shard.vx * 0.4,
             vy: (fdy / fdist) * baseSpeed + shard.vy * 0.4,
@@ -470,49 +476,33 @@ function shatterShard(shard, clickX, clickY) {
     }
 
     if (newShards.length < 2) return;
-
     const idx = shards.indexOf(shard);
-    if (idx >= 0) {
-        shards.splice(idx, 1, ...newShards);
-    }
+    if (idx >= 0) shards.splice(idx, 1, ...newShards);
 }
 
 function resolveCollisions() {
     for (let i = 0; i < shards.length; i++) {
         for (let j = i + 1; j < shards.length; j++) {
-            const a = shards[i];
-            const b = shards[j];
-
+            const a = shards[i], b = shards[j];
             const ax = a.centroid[0] + a.offsetX;
             const ay = a.centroid[1] + a.offsetY;
             const bx = b.centroid[0] + b.offsetX;
             const by = b.centroid[1] + b.offsetY;
-
-            const dx = bx - ax;
-            const dy = by - ay;
+            const dx = bx - ax, dy = by - ay;
             const distSq = dx * dx + dy * dy;
             const minDist = (a.effRadius + b.effRadius) * 0.82;
-
             if (distSq < minDist * minDist && distSq > 0.01) {
                 const dist = Math.sqrt(distSq);
                 const overlap = minDist - dist;
-                const nx = dx / dist;
-                const ny = dy / dist;
-
+                const nx = dx / dist, ny = dy / dist;
                 const totalArea = a.area + b.area;
-                const pushA = overlap * (b.area / totalArea);
-                const pushB = overlap * (a.area / totalArea);
-
-                a.offsetX -= nx * pushA;
-                a.offsetY -= ny * pushA;
-                b.offsetX += nx * pushB;
-                b.offsetY += ny * pushB;
-
+                a.offsetX -= nx * overlap * (b.area / totalArea);
+                a.offsetY -= ny * overlap * (b.area / totalArea);
+                b.offsetX += nx * overlap * (a.area / totalArea);
+                b.offsetY += ny * overlap * (a.area / totalArea);
                 const sep = 0.08;
-                a.vx -= nx * sep;
-                a.vy -= ny * sep;
-                b.vx += nx * sep;
-                b.vy += ny * sep;
+                a.vx -= nx * sep; a.vy -= ny * sep;
+                b.vx += nx * sep; b.vy += ny * sep;
             }
         }
     }
@@ -562,29 +552,21 @@ function findShardAt(x, y) {
 }
 
 function rayPolygonIntersect(ox, oy, dx, dy, points) {
-    let closestT = Infinity;
-    let closestEdge = -1;
-    let closestPoint = null;
-
+    let closestT = Infinity, closestEdge = -1, closestPoint = null;
     for (let i = 0; i < points.length; i++) {
         const j = (i + 1) % points.length;
         const ax = points[i][0], ay = points[i][1];
         const bx = points[j][0], by = points[j][1];
         const ex = bx - ax, ey = by - ay;
-
         const det = dy * ex - dx * ey;
         if (Math.abs(det) < 1e-10) continue;
-
         const t = (ex * (ay - oy) - ey * (ax - ox)) / det;
         const u = (dx * (ay - oy) - dy * (ax - ox)) / det;
-
         if (t > 1e-6 && u >= 0 && u <= 1 && t < closestT) {
-            closestT = t;
-            closestEdge = i;
+            closestT = t; closestEdge = i;
             closestPoint = [ox + t * dx, oy + t * dy];
         }
     }
-
     return closestEdge >= 0 ? { point: closestPoint, edgeIndex: closestEdge } : null;
 }
 
@@ -620,10 +602,12 @@ function computeCentroid(points) {
     return [cx_ / points.length, cy_ / points.length];
 }
 
-function drawShard(shard) {
+// reformProgress: 0=完全破碎态, 1=完全归位且文字渐隐完成
+// 在阶段1(位移归位)时 reformProgress=0,阶段2(内容渐隐)时从0升到1
+function drawShard(shard, reformProgress = 0, bgAlpha = 0.45) {
     const age = (performance.now() - shard.birthTime) / 1000;
     let glow = 0;
-    if (age < 1.5) {
+    if (reformProgress === 0 && age < 1.5) {
         glow = Math.max(0, 1 - age / 1.5);
         glow = Math.pow(glow, 1.2);
     }
@@ -640,20 +624,18 @@ function drawShard(shard) {
     }
     ctx.closePath();
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
-    ctx.fill();
+    if (bgAlpha > 0.01) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${bgAlpha})`;
+        ctx.fill();
+    }
 
-    // 破裂边缘发光：三层不同粗细透明度的描边叠加，无shadowBlur
     if (glow > 0.05) {
-        // 外层泛光：粗线低透明度，模拟大范围弥散
         ctx.strokeStyle = `rgba(150, 210, 255, ${glow * 0.25})`;
         ctx.lineWidth = 10;
         ctx.stroke();
-        // 中层光晕：中等粗细
         ctx.strokeStyle = `rgba(200, 230, 255, ${glow * 0.5})`;
         ctx.lineWidth = 4.5;
         ctx.stroke();
-        // 内层高亮核心：细线高透明度
         ctx.strokeStyle = `rgba(255, 255, 255, ${glow})`;
         ctx.lineWidth = 1.2;
         ctx.stroke();
@@ -661,10 +643,20 @@ function drawShard(shard) {
 
     ctx.save();
     ctx.clip();
-    const srcCanvas = shard.type === 'text' ? textCanvas : clockCanvas;
-    ctx.drawImage(srcCanvas, 0, 0);
-    ctx.restore();
 
+    // 阶段2:文字碎片内容渐隐为时钟
+    if (shard.type === 'text' && reformProgress > 0) {
+        ctx.globalAlpha = 1 - reformProgress;
+        ctx.drawImage(textCanvas, 0, 0);
+        ctx.globalAlpha = reformProgress;
+        ctx.drawImage(clockCanvas, 0, 0);
+        ctx.globalAlpha = 1;
+    } else {
+        const srcCanvas = shard.type === 'text' ? textCanvas : clockCanvas;
+        ctx.drawImage(srcCanvas, 0, 0);
+    }
+
+    ctx.restore();
     ctx.restore();
 }
 
@@ -708,7 +700,67 @@ function animate() {
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
         ctx.fill();
         ctx.drawImage(clockCanvas, 0, 0);
-    } else {
+    } else if (state === 'reforming') {
+        const elapsed = performance.now() - reformState.startTime;
+        const moveDur = reformState.moveDuration;
+        const fadeDur = reformState.fadeDuration;
+
+        // 判断当前处于哪个阶段
+        let phase, moveT = 0, fadeT = 0;
+        if (elapsed <= moveDur) {
+            phase = 1;
+            moveT = elapsed / moveDur;
+        } else if (elapsed <= moveDur + fadeDur) {
+            phase = 2;
+            moveT = 1;
+            fadeT = (elapsed - moveDur) / fadeDur;
+        } else {
+            phase = 2;
+            moveT = 1;
+            fadeT = 1;
+        }
+
+        const easedMove = easeInOutCubic(moveT);
+
+        // 更新每个碎片的位移和旋转,平滑归位
+        for (const init of reformState.initialStates) {
+            const s = init.shard;
+            s.offsetX = init.startOffsetX * (1 - easedMove);
+            s.offsetY = init.startOffsetY * (1 - easedMove);
+            // 旋转走最短路径归零
+            let rot = init.startRotation;
+            while (rot > Math.PI) rot -= 2 * Math.PI;
+            while (rot < -Math.PI) rot += 2 * Math.PI;
+            s.rotation = rot * (1 - easedMove);
+            s.vx = 0; s.vy = 0; s.rotationSpeed = 0;
+        }
+
+        // 统一背景圆透明度:阶段1从0升到0.45(填补缝隙),阶段2保持0.45
+        const bgAlpha = 0.45 * easedMove;
+        if (bgAlpha > 0.01) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${bgAlpha})`;
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // 碎片各自背景填充:阶段1保持0.45,阶段2从0.45降到0(已被统一背景接管)
+        const shardBgAlpha = phase === 1 ? 0.45 : 0.45 * (1 - fadeT);
+        // 内容渐隐只在阶段2进行
+        const reformProgress = phase === 1 ? 0 : fadeT;
+
+        for (const s of shards) {
+            drawShard(s, reformProgress, shardBgAlpha);
+        }
+
+        // 动画结束,切回完整状态
+        if (elapsed > moveDur + fadeDur) {
+            state = 'intact';
+            shards = [];
+            reformState = null;
+            hint.classList.remove('hidden');
+        }
+    } else { // shattered
         for (const s of shards) {
             s.offsetX += s.vx;
             s.offsetY += s.vy;
@@ -719,7 +771,7 @@ function animate() {
         }
         resolveCollisions();
         for (const s of shards) {
-            drawShard(s);
+            drawShard(s, 0, 0.45);
         }
     }
 
